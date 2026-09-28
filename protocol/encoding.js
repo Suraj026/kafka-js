@@ -160,6 +160,9 @@ export class Reader {
         if (len === -1) {
             return null;
         }
+        if (len < 0) {
+            throw new RangeError(`Invalid string length: ${len}`);
+        }
 
         // slice string bytes
         this.#assertHasBytes(len);
@@ -175,6 +178,9 @@ export class Reader {
         const len = this.readInt32();
         if (len === -1) {
             return null;
+        }
+        if (len < 0) {
+            throw new RangeError(`Invalid bytes length: ${len}`);
         }
 
         // slice bytes

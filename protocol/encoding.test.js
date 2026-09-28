@@ -97,6 +97,16 @@ describe('string', () => {
         assert.strictEqual(hex('writeString', ''), '0000');
         assert.strictEqual(hex('writeString', null), 'ffff');
     });
+        test('rejects negative length other than -1', () => {
+        // -2 encoded as int16: fffe
+        const r = new Reader(Buffer.from([0xff, 0xfe]));
+        assert.throws(() => r.readString(), /Invalid string length: -2/);
+        
+        // -100 encoded as int16: ff9c
+        const r2 = new Reader(Buffer.from([0xff, 0x9c]));
+        assert.throws(() => r2.readString(), /Invalid string length: -100/);
+    });
+
 });
 
 describe('bytes', () => {
@@ -111,6 +121,16 @@ describe('bytes', () => {
         assert.ok(Buffer.isBuffer(out));
         assert.strictEqual(out.length, 0);
     });
+    test('rejects negative length other than -1', () => {
+    // -2 encoded as int32: ff ff ff fe
+    const r = new Reader(Buffer.from([0xff, 0xff, 0xff, 0xfe]));
+    assert.throws(() => r.readBytes(), /Invalid bytes length: -2/);
+    
+    // -100 encoded as int32: ff ff ff 9c
+    const r2 = new Reader(Buffer.from([0xff, 0xff, 0xff, 0x9c]));
+    assert.throws(() => r2.readBytes(), /Invalid bytes length: -100/);
+    });
+
     test('null round-trips as null', () => {
         assert.strictEqual(roundTrip('writeBytes', 'readBytes', null), null);
     });
