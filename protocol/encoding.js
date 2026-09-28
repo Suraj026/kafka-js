@@ -114,8 +114,16 @@ export class Reader {
         this.offset = 0;
     }
 
+    // helper function to check out of bounds
+    #assertHasBytes(count) {
+        if (this.remaining() < count) {
+            throw new RangeError(`Insufficient data: need ${count} bytes, only ${this.buffer.length - this.offset} remaining`)
+        }
+    }
+
     // Reads 1 byte as signed int8, advances offset by 1
     readInt8() {
+        this.#assertHasBytes(1);
         const value = this.buffer.readInt8(this.offset);
         this.offset += 1;
         return value;
@@ -123,6 +131,7 @@ export class Reader {
 
     // Reads 2 bytes as signed int16 advances offset by 2
     readInt16() {
+        this.#assertHasBytes(2);
         const value = this.buffer.readInt16BE(this.offset);
         this.offset += 2;
         return value;
@@ -130,6 +139,7 @@ export class Reader {
 
     // Reads 4 bytes as signed int32 advances offset by 4
     readInt32() {
+        this.#assertHasBytes(4);
         const value = this.buffer.readInt32BE(this.offset);
         this.offset += 4;
         return value;
@@ -137,6 +147,7 @@ export class Reader {
     
     // Reads 8 bytes as signed int64 advances offset by 8
     readInt64() {
+        this.#assertHasBytes(8);
         const value = this.buffer.readBigInt64BE(this.offset);
         this.offset += 8;
         return value;
@@ -144,12 +155,14 @@ export class Reader {
     
     // Reads int16 length
     readString() {
+        this.#assertHasBytes(2);
         const len = this.readInt16();
         if (len === -1) {
             return null;
         }
 
         // slice string bytes
+        this.#assertHasBytes(len);
         const decodedString = this.buffer.toString('utf8', this.offset, this.offset + len);
         this.offset += len;
 
@@ -158,12 +171,14 @@ export class Reader {
 
     // Reads int32 length
     readBytes() {
+        this.#assertHasBytes(4);
         const len = this.readInt32();
         if (len === -1) {
             return null;
         }
 
         // slice bytes
+        this.#assertHasBytes(len);
         const value = this.buffer.subarray(this.offset, this.offset + len);
         this.offset += len;
 

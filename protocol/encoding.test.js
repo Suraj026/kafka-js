@@ -1,0 +1,186 @@
+import { test, describe } from 'node:test';
+import assert from 'node:assert';
+import { Reader, Writer } from './encoding.js';
+
+// write one value with writer and read it back with writer
+function roundTrip(writeMethod, readMethod, value) {
+    const w = new Writer();
+    w[writeMethod](value);
+
+    const r = new Reader(w.toBuffer());
+    const out = r[readMethod]();
+
+    assert.strictEqual(r.remaining(), 0, 'Reader should consume every byte written');
+    return out;
+}
+
+function hex(writeMethod, value) {
+    const w = new Writer();
+    w[writeMethod](value);
+
+    return w.toBuffer().toString('hex');
+}
+
+describe('int8', () => {
+    for (const v of [0, 1, -1, 127, -128]) {
+        test(`round trip ${v}`, () => {
+            assert.strictEqual(roundTrip('writeInt8', 'readInt8', v), v);
+        });
+    }
+    test('wire format', () => {
+        assert.strictEqual(hex('writeInt8', 1), '01');
+        assert.strictEqual(hex('writeInt8', -1), 'ff');
+    });
+    test('rejects out-of-range value', () => {
+        assert.throws(() => new Writer().writeInt8(128));
+    });
+});
+
+describe('int16', () => {
+    for (const v of [0, 1, -1, 258, 32767, -32768]) {
+        test(`round-trips ${v}`, () => {
+            assert.strictEqual(roundTrip('writeInt16', 'readInt16', v), v);
+        });
+    }
+    test('wire format is big-endian', () => {
+        assert.strictEqual(hex('writeInt16', 1), '0001');
+        assert.strictEqual(hex('writeInt16', 258), '0102');
+        assert.strictEqual(hex('writeInt16', -1), 'ffff');
+    });
+    test('rejects out-of-range value', () => {
+        assert.throws(() => new Writer().writeInt16(32768));
+    });
+});
+
+describe('int32', () => {
+    for (const v of [0, 1, -1, 258, 2147483647, -2147483648]) {
+        test(`round-trips ${v}`, () => {
+            assert.strictEqual(roundTrip('writeInt32', 'readInt32', v), v);
+        });
+    }
+    test('wire format is big-endian', () => {
+        assert.strictEqual(hex('writeInt32', 1), '00000001');
+        assert.strictEqual(hex('writeInt32', 258), '00000102');
+        assert.strictEqual(hex('writeInt32', -1), 'ffffffff');
+    });
+    test('rejects out-of-range value', () => {
+        assert.throws(() => new Writer().writeInt32(2147483648));
+    });
+});
+
+describe('int64', () => {
+    const values = [0n, 1n, -1n, BigInt(Number.MAX_SAFE_INTEGER), 2n ** 63n - 1n, -(2n ** 63n)];
+    for (const v of values) {
+        test(`round-trips ${v}`, () => {
+            const out = roundTrip('writeInt64', 'readInt64', v);
+            assert.strictEqual(typeof out, 'bigint');
+            assert.strictEqual(out, v);
+        });
+    }
+    test('wire format is big-endian', () => {
+        assert.strictEqual(hex('writeInt64', 1n), '0000000000000001');
+        assert.strictEqual(hex('writeInt64', -1n), 'ffffffffffffffff');
+    });
+});
+
+describe('string', () => {
+    for (const v of ['hello', '', 'my-client_01 !@#']) {
+        test(`round-trips ${JSON.stringify(v)}`, () => {
+            assert.strictEqual(roundTrip('writeString', 'readString', v), v);
+        });
+    }
+    test('null round-trips as null, not empty string', () => {
+        assert.strictEqual(roundTrip('writeString', 'readString', null), null);
+    });
+    test('wire format: int16 length prefix + utf8', () => {
+        assert.strictEqual(hex('writeString', 'hi'), '00026869');
+        assert.strictEqual(hex('writeString', ''), '0000');
+        assert.strictEqual(hex('writeString', null), 'ffff');
+    });
+});
+
+describe('bytes', () => {
+    test('round-trips a buffer', () => {
+        const input = Buffer.from([1, 2, 3, 250]);
+        const out = roundTrip('writeBytes', 'readBytes', input);
+        assert.ok(Buffer.isBuffer(out));
+        assert.ok(out.equals(input));
+    });
+    test('empty buffer round-trips as empty buffer, not null', () => {
+        const out = roundTrip('writeBytes', 'readBytes', Buffer.alloc(0));
+        assert.ok(Buffer.isBuffer(out));
+        assert.strictEqual(out.length, 0);
+    });
+    test('null round-trips as null', () => {
+        assert.strictEqual(roundTrip('writeBytes', 'readBytes', null), null);
+    });
+    test('wire format: int32 length prefix + raw bytes', () => {
+        assert.strictEqual(hex('writeBytes', Buffer.from([1, 2, 3])), '00000003010203');
+        assert.strictEqual(hex('writeBytes', Buffer.alloc(0)), '00000000');
+        assert.strictEqual(hex('writeBytes', null), 'ffffffff');
+    });
+});
+
+describe('composite', () => {
+    test('mixed types written in sequence read back in order', () => {
+        const w = new Writer();
+        w.writeInt16(3);
+        w.writeInt16(0);
+        w.writeInt32(42);
+        w.writeString('my-client');
+        w.writeString(null);
+        w.writeInt64(123456789012n);
+        w.writeBytes(Buffer.from('key'));
+        w.writeBytes(null);
+        w.writeInt8(-5);
+
+        const r = new Reader(w.toBuffer());
+        assert.strictEqual(r.readInt16(), 3);
+        assert.strictEqual(r.readInt16(), 0);
+        assert.strictEqual(r.readInt32(), 42);
+        assert.strictEqual(r.readString(), 'my-client');
+        assert.strictEqual(r.readString(), null);
+        assert.strictEqual(r.readInt64(), 123456789012n);
+        assert.strictEqual(r.readBytes().toString(), 'key');
+        assert.strictEqual(r.readBytes(), null);
+        assert.strictEqual(r.readInt8(), -5);
+        assert.strictEqual(r.remaining(), 0);
+    });
+
+    test('remaining() decreases as values are read', () => {
+        const w = new Writer();
+        w.writeInt32(1);
+        w.writeInt32(2);
+        const r = new Reader(w.toBuffer());
+        assert.strictEqual(r.remaining(), 8);
+        r.readInt32();
+        assert.strictEqual(r.remaining(), 4);
+        r.readInt32();
+        assert.strictEqual(r.remaining(), 0);
+    });
+
+    test('reader can start from a buffer containing trailing bytes', () => {
+        const w = new Writer();
+        w.writeInt32(7);
+        const buf = Buffer.concat([w.toBuffer(), Buffer.from([9, 9])]);
+        const r = new Reader(buf);
+        assert.strictEqual(r.readInt32(), 7);
+        assert.strictEqual(r.remaining(), 2);
+    });
+});
+
+describe('truncated input (matters once TCP framing hands you partial data)', () => {
+    test('reading an int past the end throws', () => {
+        const r = new Reader(Buffer.from([0, 0]));
+        assert.throws(() => r.readInt32());
+    });
+    test('string whose length prefix exceeds remaining bytes throws', () => {
+        // claims 10 bytes, only 2 follow
+        const r = new Reader(Buffer.from([0x00, 0x0a, 0x68, 0x69]));
+        assert.throws(() => r.readString());
+    });
+    test('bytes whose length prefix exceeds remaining bytes throws', () => {
+        const r = new Reader(Buffer.from([0x00, 0x00, 0x00, 0x0a, 0x01]));
+        assert.throws(() => r.readBytes());
+    });
+});
