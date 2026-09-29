@@ -9,7 +9,6 @@ export class Writer {
         this.buffers = [];
         this.length = 0;
     }
-
     // Writes a signed 8-bit integer
     writeInt8(v) {
         // allocate a 1-byte buffer
@@ -43,6 +42,19 @@ export class Writer {
 
         // write value
         buf.writeInt32BE(v, 0);
+        
+        this.buffers.push(buf);
+        this.length += 4;
+        return this   
+    }
+
+    // Writes an unsigned 32-bit integer
+    writeUInt32(v) {
+        // allocate a 4-byte buffer
+        const buf = Buffer.alloc(4);
+
+        // write value
+        buf.writeUInt32BE(v, 0);
         
         this.buffers.push(buf);
         this.length += 4;
@@ -141,6 +153,14 @@ export class Reader {
     readInt32() {
         this.#assertHasBytes(4);
         const value = this.buffer.readInt32BE(this.offset);
+        this.offset += 4;
+        return value;
+    }
+
+    // Reads 4 bytes as unsigned int32 advances offset by 4
+    readUInt32() {
+        this.#assertHasBytes(4);
+        const value = this.buffer.readUInt32BE(this.offset);
         this.offset += 4;
         return value;
     }
