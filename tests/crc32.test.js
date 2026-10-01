@@ -2,7 +2,7 @@
 // standard published test vector (see the first test).
 import { test, describe } from "node:test";
 import assert from "node:assert";
-import { crc32c } from "./crc32.js"; 
+import { crc32c } from "../protocol/crc32.js"; 
 
 function buf(str) {
   return Buffer.from(str, 'utf8');

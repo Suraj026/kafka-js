@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { Reader, Writer } from './encoding.js';
+import { Reader, Writer } from '../protocol/encoding.js';
 
 // write one value with writer and read it back with writer
 function roundTrip(writeMethod, readMethod, value) {
