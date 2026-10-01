@@ -204,3 +204,143 @@ describe('truncated input (matters once TCP framing hands you partial data)', ()
         assert.throws(() => r.readBytes());
     });
 });
+
+describe('uint32', () => {
+    for (const v of [0, 1, 258, 2147483648, 4294967295]) {
+        test(`round-trips ${v}`, () => {
+            assert.strictEqual(roundTrip('writeUInt32', 'readUInt32', v), v);
+        });
+    }
+    test('wire format is big-endian', () => {
+        assert.strictEqual(hex('writeUInt32', 1), '00000001');
+        assert.strictEqual(hex('writeUInt32', 4294967295), 'ffffffff');
+    });
+    test('accepts the max uint32 value that writeInt32 would reject', () => {
+        // This is the whole reason writeUInt32 exists -- confirm the boundary.
+        assert.doesNotThrow(() => new Writer().writeUInt32(4294967295));
+        assert.throws(() => new Writer().writeInt32(4294967295));
+    });
+    test('rejects a negative value', () => {
+        assert.throws(() => new Writer().writeUInt32(-1));
+    });
+    test('rejects a value above the uint32 range', () => {
+        assert.throws(() => new Writer().writeUInt32(4294967296));
+    });
+});
+
+describe('varint', () => {
+    const values = [0, 1, -1, 63, 64, -64, -65, 1000000, 2147483647, -2147483648];
+    for (const v of values) {
+        test(`round-trips ${v}`, () => {
+            assert.strictEqual(roundTrip('writeVarint', 'readVarint', v), v);
+        });
+    }
+    test('zig-zag wire format: small values stay small', () => {
+        // These are the values most likely to expose a zig-zag direction bug --
+        // -1 and 1 would be adjacent after zig-zag, so a sign flip here is
+        // the single most common mistake in a varint implementation.
+        assert.strictEqual(hex('writeVarint', 0), '00');
+        assert.strictEqual(hex('writeVarint', 1), '02');
+        assert.strictEqual(hex('writeVarint', -1), '01');
+    });
+    test('crosses the first single-byte boundary correctly', () => {
+        // 63 fits in one byte (continuation bit clear); 64 needs a second byte.
+        assert.strictEqual(hex('writeVarint', 63), '7e');
+        assert.strictEqual(hex('writeVarint', 64), '8001');
+        assert.strictEqual(hex('writeVarint', -64), '7f');
+        assert.strictEqual(hex('writeVarint', -65), '8101');
+    });
+    test('multi-byte value', () => {
+        assert.strictEqual(hex('writeVarint', 1000000), '80897a');
+    });
+    test('int32 boundary values', () => {
+        assert.strictEqual(hex('writeVarint', 2147483647), 'feffffff0f');
+        assert.strictEqual(hex('writeVarint', -2147483648), 'ffffffff0f');
+    });
+    test('reader stops at the byte with the continuation bit clear', () => {
+        // A multi-byte varint followed by trailing bytes: the reader must not
+        // consume more than the varint itself.
+        const w = new Writer();
+        w.writeVarint(64); // 2 bytes: 80 01
+        const trailing = Buffer.from([0x99]);
+        const r = new Reader(Buffer.concat([w.toBuffer(), trailing]));
+        assert.strictEqual(r.readVarint(), 64);
+        assert.strictEqual(r.remaining(), 1);
+    });
+});
+
+describe('varlong', () => {
+    const values = [0n, 1n, -1n, 63n, 64n, -64n, -65n, 4294967296n,
+        2n ** 63n - 1n, -(2n ** 63n)];
+    for (const v of values) {
+        test(`round-trips ${v}`, () => {
+            const out = roundTrip('writeVarlong', 'readVarlong', v);
+            assert.strictEqual(typeof out, 'bigint');
+            assert.strictEqual(out, v);
+        });
+    }
+    test('zig-zag wire format', () => {
+        assert.strictEqual(hex('writeVarlong', 0n), '00');
+        assert.strictEqual(hex('writeVarlong', 1n), '02');
+        assert.strictEqual(hex('writeVarlong', -1n), '01');
+    });
+    test('value beyond 32-bit range that writeVarint cannot hold', () => {
+        // This is the whole reason writeVarlong exists -- confirm it handles
+        // a value past where varint would overflow.
+        assert.strictEqual(hex('writeVarlong', 4294967296n), '8080808020');
+    });
+    test('int64 boundary values', () => {
+        assert.strictEqual(hex('writeVarlong', 2n ** 63n - 1n), 'feffffffffffffffff01');
+        assert.strictEqual(hex('writeVarlong', -(2n ** 63n)), 'ffffffffffffffffff01');
+    });
+});
+
+describe('array', () => {
+    test('round-trips an array of strings', () => {
+        const w = new Writer();
+        w.writeArray(['alpha', 'beta', 'gamma'], (writer, item) => writer.writeString(item));
+        const r = new Reader(w.toBuffer());
+        const out = r.readArray((reader) => reader.readString());
+        assert.deepStrictEqual(out, ['alpha', 'beta', 'gamma']);
+        assert.strictEqual(r.remaining(), 0);
+    });
+    test('empty array round-trips as [], not null', () => {
+        const w = new Writer();
+        w.writeArray([], (writer, item) => writer.writeString(item));
+        const r = new Reader(w.toBuffer());
+        const out = r.readArray((reader) => reader.readString());
+        assert.deepStrictEqual(out, []);
+    });
+    test('wire format: int32 count then elements, no padding between', () => {
+        const w = new Writer();
+        w.writeArray(['hi'], (writer, item) => writer.writeString(item));
+        // count=1 (00000001) then 'hi' as a string (00026869)
+        assert.strictEqual(w.toBuffer().toString('hex'), '0000000100026869');
+    });
+    test('wire format: empty array is just a zero count, nothing else', () => {
+        const w = new Writer();
+        w.writeArray([], (writer, item) => writer.writeString(item));
+        assert.strictEqual(w.toBuffer().toString('hex'), '00000000');
+    });
+    test('round-trips an array of a non-string element type', () => {
+        const w = new Writer();
+        w.writeArray([1, 2, 3], (writer, item) => writer.writeInt32(item));
+        const r = new Reader(w.toBuffer());
+        const out = r.readArray((reader) => reader.readInt32());
+        assert.deepStrictEqual(out, [1, 2, 3]);
+    });
+    test('array nested inside composite data (header-like usage)', () => {
+        // This is the shape you'll actually use arrays in -- e.g. a list of
+        // topic names inside a Metadata request.
+        const w = new Writer();
+        w.writeString('client-id');
+        w.writeArray(['topic-a', 'topic-b'], (writer, item) => writer.writeString(item));
+        w.writeInt32(99);
+
+        const r = new Reader(w.toBuffer());
+        assert.strictEqual(r.readString(), 'client-id');
+        assert.deepStrictEqual(r.readArray((reader) => reader.readString()), ['topic-a', 'topic-b']);
+        assert.strictEqual(r.readInt32(), 99);
+        assert.strictEqual(r.remaining(), 0);
+    });
+});

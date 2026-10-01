@@ -6,15 +6,15 @@ function zigzag32(n) {  // 32 bit
     return (n << 1) ^ (n >> 31)
 }
 function zigzag64(n) {  // 64 bit
-    return (n << 1) ^ (n >> 63)
+    return (n << 1n) ^ (n >> 63n)
 }
 
 // Reader class: unsigned to signed
 function unzigzag32(n) {    // 32 bit
-    return (n >>> 1) & (-(n & 1))
+    return (n >>> 1) ^ (-(n & 1))
 }
 function unzigzag64(n) {    // 64 bit
-    return (n >>> 1n) & (-(n & 1n))
+    return (n >> 1n) ^ (-(n & 1n))
 }
 
 export class Writer {
@@ -107,7 +107,7 @@ export class Writer {
     // Zig-zag variable-length encoding 
     writeVarint(v) {
         // zigzag encode
-        const unsigned = zigzag32(v);
+        let unsigned = zigzag32(v) >>> 0;
         // variable length encode
         while (unsigned > 0x7F) {
             const byte = (unsigned & 0x7F) | 0x80;    // take low 7 bits and set MSB
@@ -120,12 +120,14 @@ export class Writer {
     }
 
     writeVarlong(v) {
-        const unsigned = zigzag64(v);
+        let unsigned = zigzag64(v);
+
         while (unsigned > 0x7Fn) {
-            const byte = Number(unsigned & 0x7F) | 0x80;
+            const byte = Number(unsigned & 0x7Fn) | 0x80;
             this.writeUInt8(byte);
-            unsigned = unsigned >>> 7n;
+            unsigned = unsigned >> 7n;
         }
+
         this.writeUInt8(Number(unsigned));
         return this;
     }
@@ -175,7 +177,7 @@ export class Writer {
         this.writeInt32(items.length);
         // write each item using callback
         for (const item of items) {
-            encodeFn(item); // Callback writes the item using writer methods
+            encodeFn(this, item); // Callback writes the item using writer methods
         }
         return this;
     }
@@ -252,17 +254,17 @@ export class Reader {
         return value;
     }
 
-    readVarInt() {
-        const result = 0;
-        const shift = 0;
+    readVarint() {
+        let result = 0;
+        let shift = 0;
         while (true) {
             this.#assertHasBytes(1);
-            byte = this.buffer.readUInt8(this.offset);
+            const byte = this.buffer.readUInt8(this.offset);
             this.offset += 1;
 
             result |= (byte & 0x7F) << shift;
 
-            if (byte & 0x80 === 0) {
+            if ((byte & 0x80) === 0) {
                 break;
             }
             shift += 7;
@@ -273,17 +275,17 @@ export class Reader {
         return unzigzag32(result);
     }
 
-    readVarLong() {
-        const result = 0n;
-        const shift = 0;
+    readVarlong() {
+        let result = 0n;
+        let shift = 0;
         while (true) {
             this.#assertHasBytes(1);
-            byte = this.buffer.readUInt8(this.offset);
+            const byte = this.buffer.readUInt8(this.offset);
             this.offset += 1;
 
             result |= BigInt(byte & 0x7F) << BigInt(shift);
 
-            if (byte & 0x80 === 0) {
+            if ((byte & 0x80) === 0) {
                 break;
             }
             shift += 7;
