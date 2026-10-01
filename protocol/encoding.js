@@ -164,6 +164,22 @@ export class Writer {
         return this;
     }
 
+    // count-prefixed arrays
+    // Wire format for ALL of them:
+    // [INT32 count][Element 1][Element 2]...[Element N]
+    writeArray(items, encodeFn) {
+        // items: array of any type
+        // encodeFn: (writer, item) => void
+
+        // write count as INT32
+        this.writeInt32(items.length);
+        // write each item using callback
+        for (const item of items) {
+            encodeFn(item); // Callback writes the item using writer methods
+        }
+        return this;
+    }
+
     // Concatenate all buffers
     toBuffer() {
         const concatBuffer = Buffer.concat(this.buffers, this.length);
@@ -314,6 +330,32 @@ export class Reader {
         this.offset += len;
 
         return value;
+    }
+
+    // count-prefixed arrays
+    // Wire format for ALL of them:
+    // [INT32 count][Element 1][Element 2]...[Element N]
+    readArray(decodeFn) {
+        // decodeFn: (reader) => element
+        // Returns: array of decoded elements
+
+        // read count
+        const count = this.readInt32();
+        // validate count
+        if (count < 0) {
+            throw new Error("Invalid array count");
+        }
+        if (count > 1000000) {
+            throw new Error("Array count too large");
+        }
+
+        // read elements 
+        const results = [];
+        for (let i = 0; i < count; i++) {
+            const element = decodeFn(this);
+            results.push(element);
+        }
+        return results;
     }
     // returns bytes not yet consumed
     remaining() {
