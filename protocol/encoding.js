@@ -1,5 +1,22 @@
 import { Buffer } from 'node:buffer';
 
+// helper functions for zigzag and variable length encoding
+// Writer class : signed to unsigned
+function zigzag32(n) {  // 32 bit
+    return (n << 1) ^ (n >> 31)
+}
+function zigzag64(n) {  // 64 bit
+    return (n << 1n) ^ (n >> 63n)
+}
+
+// Reader class: unsigned to signed
+function unzigzag32(n) {    // 32 bit
+    return (n >>> 1) ^ (-(n & 1))
+}
+function unzigzag64(n) {    // 64 bit
+    return (n >> 1n) ^ (-(n & 1n))
+}
+
 export class Writer {
     /**
      * Accumulate serialized data in memory into single Buffer
@@ -9,7 +26,6 @@ export class Writer {
         this.buffers = [];
         this.length = 0;
     }
-
     // Writes a signed 8-bit integer
     writeInt8(v) {
         // allocate a 1-byte buffer
@@ -17,6 +33,19 @@ export class Writer {
 
         // write value
         buf.writeInt8(v, 0);
+
+        this.buffers.push(buf);
+        this.length ++;
+        return this   
+    }
+
+    // Writes an unsigned 8-bit integer
+    writeUInt8(v) {
+        // allocate a 1-byte buffer
+        const buf = Buffer.alloc(1);
+
+        // write value
+        buf.writeUInt8(v, 0);
 
         this.buffers.push(buf);
         this.length ++;
@@ -49,6 +78,19 @@ export class Writer {
         return this   
     }
 
+    // Writes an unsigned 32-bit integer
+    writeUInt32(v) {
+        // allocate a 4-byte buffer
+        const buf = Buffer.alloc(4);
+
+        // write value
+        buf.writeUInt32BE(v, 0);
+        
+        this.buffers.push(buf);
+        this.length += 4;
+        return this   
+    }
+
     // Writes a signed 64-bit integer
     writeInt64(v) {
         // allocate a 8-byte buffer
@@ -60,6 +102,34 @@ export class Writer {
         this.buffers.push(buf);
         this.length += 8;
         return this   
+    }
+
+    // Zig-zag variable-length encoding 
+    writeVarint(v) {
+        // zigzag encode
+        let unsigned = zigzag32(v) >>> 0;
+        // variable length encode
+        while (unsigned > 0x7F) {
+            const byte = (unsigned & 0x7F) | 0x80;    // take low 7 bits and set MSB
+            this.writeUInt8(byte);
+            unsigned = unsigned >>> 7;
+        }
+        // final bit - MSB = 0
+        this.writeUInt8(unsigned);
+        return this
+    }
+
+    writeVarlong(v) {
+        let unsigned = zigzag64(v);
+
+        while (unsigned > 0x7Fn) {
+            const byte = Number(unsigned & 0x7Fn) | 0x80;
+            this.writeUInt8(byte);
+            unsigned = unsigned >> 7n;
+        }
+
+        this.writeUInt8(Number(unsigned));
+        return this;
     }
 
     // Writes a length prefixed utf-8 bytes
@@ -96,6 +166,22 @@ export class Writer {
         return this;
     }
 
+    // count-prefixed arrays
+    // Wire format for ALL of them:
+    // [INT32 count][Element 1][Element 2]...[Element N]
+    writeArray(items, encodeFn) {
+        // items: array of any type
+        // encodeFn: (writer, item) => void
+
+        // write count as INT32
+        this.writeInt32(items.length);
+        // write each item using callback
+        for (const item of items) {
+            encodeFn(this, item); // Callback writes the item using writer methods
+        }
+        return this;
+    }
+
     // Concatenate all buffers
     toBuffer() {
         const concatBuffer = Buffer.concat(this.buffers, this.length);
@@ -129,6 +215,13 @@ export class Reader {
         return value;
     }
 
+    readUInt8() {
+        this.#assertHasBytes(1);
+        const value = this.buffer.readUInt8(this.offset);
+        this.offset += 1;
+        return value;
+    }
+
     // Reads 2 bytes as signed int16 advances offset by 2
     readInt16() {
         this.#assertHasBytes(2);
@@ -144,6 +237,14 @@ export class Reader {
         this.offset += 4;
         return value;
     }
+
+    // Reads 4 bytes as unsigned int32 advances offset by 4
+    readUInt32() {
+        this.#assertHasBytes(4);
+        const value = this.buffer.readUInt32BE(this.offset);
+        this.offset += 4;
+        return value;
+    }
     
     // Reads 8 bytes as signed int64 advances offset by 8
     readInt64() {
@@ -152,6 +253,48 @@ export class Reader {
         this.offset += 8;
         return value;
     }
+
+    readVarint() {
+        let result = 0;
+        let shift = 0;
+        while (true) {
+            this.#assertHasBytes(1);
+            const byte = this.buffer.readUInt8(this.offset);
+            this.offset += 1;
+
+            result |= (byte & 0x7F) << shift;
+
+            if ((byte & 0x80) === 0) {
+                break;
+            }
+            shift += 7;
+            if (shift >= 32) {
+                throw new RangeError("Varint too long");
+            }
+        }
+        return unzigzag32(result);
+    }
+
+    readVarlong() {
+        let result = 0n;
+        let shift = 0;
+        while (true) {
+            this.#assertHasBytes(1);
+            const byte = this.buffer.readUInt8(this.offset);
+            this.offset += 1;
+
+            result |= BigInt(byte & 0x7F) << BigInt(shift);
+
+            if ((byte & 0x80) === 0) {
+                break;
+            }
+            shift += 7;
+            if (shift >= 64) {
+                throw new RangeError("Varlong too long");
+            }
+        }
+        return unzigzag64(result);
+    }
     
     // Reads int16 length
     readString() {
@@ -159,6 +302,9 @@ export class Reader {
         const len = this.readInt16();
         if (len === -1) {
             return null;
+        }
+        if (len < 0) {
+            throw new RangeError(`Invalid string length: ${len}`);
         }
 
         // slice string bytes
@@ -176,6 +322,9 @@ export class Reader {
         if (len === -1) {
             return null;
         }
+        if (len < 0) {
+            throw new RangeError(`Invalid bytes length: ${len}`);
+        }
 
         // slice bytes
         this.#assertHasBytes(len);
@@ -183,6 +332,32 @@ export class Reader {
         this.offset += len;
 
         return value;
+    }
+
+    // count-prefixed arrays
+    // Wire format for ALL of them:
+    // [INT32 count][Element 1][Element 2]...[Element N]
+    readArray(decodeFn) {
+        // decodeFn: (reader) => element
+        // Returns: array of decoded elements
+
+        // read count
+        const count = this.readInt32();
+        // validate count
+        if (count < 0) {
+            throw new Error("Invalid array count");
+        }
+        if (count > 1000000) {
+            throw new Error("Array count too large");
+        }
+
+        // read elements 
+        const results = [];
+        for (let i = 0; i < count; i++) {
+            const element = decodeFn(this);
+            results.push(element);
+        }
+        return results;
     }
     // returns bytes not yet consumed
     remaining() {
